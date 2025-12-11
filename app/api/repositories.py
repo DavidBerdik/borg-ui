@@ -15,6 +15,7 @@ from app.core.borg import BorgInterface
 from app.config import settings
 from app.services.check_service import check_service
 from app.services.compact_service import compact_service
+from app.services.mount_service import mount_service
 from app.utils.datetime_utils import serialize_datetime
 
 logger = structlog.get_logger()
@@ -2353,3 +2354,153 @@ async def get_check_schedule(
     except Exception as e:
         logger.error("Failed to get check schedule", error=str(e), repo_id=repo_id)
         raise HTTPException(status_code=500, detail=f"Failed to get check schedule: {str(e)}")
+
+@router.post("/{repo_id}/mount")
+async def mount_repository(
+    repo_id: int,
+    request: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Mount a repository or archive as a FUSE filesystem"""
+    try:
+        repository = db.query(Repository).filter(Repository.id == repo_id).first()
+        if not repository:
+            raise HTTPException(status_code=404, detail="Repository not found")
+
+        archive_name = request.get("archive_name")
+        mount_point = request.get("mount_point")  # Optional custom mount point
+        mount_options = request.get("mount_options", [])  # List of mount options
+        foreground = request.get("foreground", False)
+        consider_checkpoints = request.get("consider_checkpoints", False)
+        paths = request.get("paths", "")
+        strip_components = request.get("strip_components", "")
+        glob_archives = request.get("glob_archives", "")
+        first_n = request.get("first_n", "")
+        last_n = request.get("last_n", "")
+
+        # Validate mount options
+        valid_options = [
+            "numeric-ids",
+            "versions",
+            "allow_damaged_files",
+            "ignore_permissions"
+        ]
+        # Also allow uid=X and gid=Y format
+        for opt in mount_options:
+            if opt not in valid_options and not opt.startswith("uid=") and not opt.startswith("gid="):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid mount option: {opt}. Valid options: {valid_options} or uid=X/gid=Y"
+                )
+
+        # Create mount job
+        mount_job = await mount_service.mount_repository(
+            repository_id=repo_id,
+            archive_name=archive_name,
+            mount_point=mount_point,
+            mount_options=mount_options,
+            foreground=foreground,
+            consider_checkpoints=consider_checkpoints,
+            paths=paths,
+            strip_components=strip_components,
+            glob_archives=glob_archives,
+            first_n=first_n,
+            last_n=last_n,
+            db=db
+        )
+
+        logger.info("Mount job created",
+                   job_id=mount_job.id,
+                   repository_id=repo_id,
+                   archive_name=archive_name,
+                   mount_point=mount_job.mount_point,
+                   user=current_user.username)
+
+        return {
+            "success": True,
+            "job_id": mount_job.id,
+            "mount_point": mount_job.mount_point,
+            "status": mount_job.status,
+            "message": "Mount operation started"
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to mount repository", error=str(e), repo_id=repo_id)
+        raise HTTPException(status_code=500, detail=f"Failed to mount repository: {str(e)}")
+
+@router.post("/{repo_id}/unmount")
+async def unmount_repository(
+    repo_id: int,
+    request: dict = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Unmount a repository or archive"""
+    try:
+        repository = db.query(Repository).filter(Repository.id == repo_id).first()
+        if not repository:
+            raise HTTPException(status_code=404, detail="Repository not found")
+
+        archive_name = request.get("archive_name") if request else None
+
+        # Unmount
+        success = await mount_service.unmount_repository(
+            repository_id=repo_id,
+            archive_name=archive_name,
+            db=db
+        )
+
+        if success:
+            logger.info("Unmount successful",
+                       repository_id=repo_id,
+                       archive_name=archive_name,
+                       user=current_user.username)
+            return {
+                "success": True,
+                "message": "Unmount operation completed successfully"
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Unmount operation failed")
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to unmount repository", error=str(e), repo_id=repo_id)
+        raise HTTPException(status_code=500, detail=f"Failed to unmount repository: {str(e)}")
+
+@router.get("/{repo_id}/mount-status")
+async def get_mount_status(
+    repo_id: int,
+    archive_name: Optional[str] = Query(None, description="Optional archive name to check specific mount"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get mount status for a repository or archive"""
+    try:
+        repository = db.query(Repository).filter(Repository.id == repo_id).first()
+        if not repository:
+            raise HTTPException(status_code=404, detail="Repository not found")
+
+        status = mount_service.get_mount_status(
+            repository_id=repo_id,
+            archive_name=archive_name,
+            db=db
+        )
+
+        return {
+            "success": True,
+            **status
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get mount status", error=str(e), repo_id=repo_id)
+        raise HTTPException(status_code=500, detail=f"Failed to get mount status: {str(e)}")

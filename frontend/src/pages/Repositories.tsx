@@ -24,6 +24,13 @@ import {
   InputAdornment,
   Checkbox,
   FormControlLabel,
+  Tabs,
+  Tab,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Tooltip,
+  Paper,
 } from '@mui/material'
 import {
   Add,
@@ -38,6 +45,11 @@ import {
   Compress,
   Inventory,
   FileUpload,
+  Folder,
+  ExpandMore,
+  HelpOutline,
+  ContentCopy,
+  Refresh,
 } from '@mui/icons-material'
 import { repositoriesAPI, sshKeysAPI } from '../services/api'
 import { useAuth } from '../hooks/useAuth'
@@ -99,6 +111,24 @@ export default function Repositories() {
   const [checkingRepository, setCheckingRepository] = useState<Repository | null>(null)
   const [compactingRepository, setCompactingRepository] = useState<Repository | null>(null)
   const [pruningRepository, setPruningRepository] = useState<Repository | null>(null)
+  const [mountingRepository, setMountingRepository] = useState<Repository | null>(null)
+  const [mountDialogOpen, setMountDialogOpen] = useState(false)
+  const [mountForm, setMountForm] = useState({
+    archiveName: '',
+    mountPoint: '',
+    mountOptions: [] as string[],
+    mountType: 'repository' as 'repository' | 'archive',
+    uid: '',
+    gid: '',
+    foreground: false,
+    considerCheckpoints: false,
+    paths: '',
+    stripComponents: '',
+    globArchives: '',
+    firstN: '',
+    lastN: '',
+    showAdvanced: false,
+  })
   const [pruneForm, setPruneForm] = useState({
     keep_hourly: 0,
     keep_daily: 7,
@@ -142,6 +172,16 @@ export default function Repositories() {
     queryFn: () => repositoriesAPI.getRepositoryInfo(viewingInfoRepository!.id),
     enabled: !!viewingInfoRepository,
     placeholderData: (previousData: any) => previousData, // Keep showing data during dialog close animation (was keepPreviousData in v3)
+  })
+
+  // Get archives for mount dialog when mounting specific archive
+  const {
+    data: archivesData,
+    isLoading: loadingArchives,
+  } = useQuery<any>({
+    queryKey: ['repository-archives', mountingRepository?.id],
+    queryFn: () => repositoriesAPI.listRepositoryArchives(mountingRepository!.id),
+    enabled: !!mountingRepository && mountDialogOpen && mountForm.mountType === 'archive',
     retry: false,
   })
 
@@ -309,6 +349,49 @@ export default function Repositories() {
     },
   })
 
+  const mountRepositoryMutation = useMutation({
+    mutationFn: (data: any) => repositoriesAPI.mountRepository(data.id, data),
+    onSuccess: (response: any) => {
+      toast.success(`Mount started successfully! Mount point: ${response.data.mount_point}`)
+      setMountDialogOpen(false)
+      setMountingRepository(null)
+      setMountForm({
+        archiveName: '',
+        mountPoint: '',
+        mountOptions: [],
+        mountType: 'repository',
+        uid: '',
+        gid: '',
+        foreground: false,
+        considerCheckpoints: false,
+        paths: '',
+        stripComponents: '',
+        globArchives: '',
+        firstN: '',
+        lastN: '',
+        showAdvanced: false,
+      })
+      queryClient.invalidateQueries({ queryKey: ['repositories'] })
+      queryClient.invalidateQueries({ queryKey: ['mount-status', mountingRepository?.id] })
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to mount repository')
+    },
+  })
+
+  const unmountRepositoryMutation = useMutation({
+    mutationFn: ({ id, archiveName }: { id: number; archiveName?: string }) =>
+      repositoriesAPI.unmountRepository(id, archiveName),
+    onSuccess: () => {
+      toast.success('Repository unmounted successfully')
+      queryClient.invalidateQueries({ queryKey: ['repositories'] })
+      queryClient.invalidateQueries({ queryKey: ['mount-status', mountingRepository?.id] })
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.detail || 'Failed to unmount repository')
+    },
+  })
+
   // Unified form state for create/import
   const [repositoryForm, setRepositoryForm] = useState({
     name: '',
@@ -413,6 +496,131 @@ export default function Repositories() {
   const handleConfirmCompact = () => {
     if (compactingRepository) {
       compactRepositoryMutation.mutate(compactingRepository.id)
+    }
+  }
+
+  const handleMountRepository = (repository: Repository) => {
+    setMountingRepository(repository)
+    setMountDialogOpen(true)
+    setMountForm({
+      archiveName: '',
+      mountPoint: '',
+      mountOptions: [],
+      mountType: 'repository',
+      uid: '',
+      gid: '',
+      foreground: false,
+      considerCheckpoints: false,
+      paths: '',
+      stripComponents: '',
+      globArchives: '',
+      firstN: '',
+      lastN: '',
+      showAdvanced: false,
+    })
+  }
+
+  const [mountDialogTab, setMountDialogTab] = useState(0)
+
+  // Generate mount command preview
+  const generateMountCommandPreview = () => {
+    if (!mountingRepository) return ''
+    
+    const parts = ['borg', 'mount']
+    
+    // Add mount options
+    const fuseOpts = []
+    if (mountForm.mountOptions.includes('versions')) fuseOpts.push('versions')
+    if (mountForm.mountOptions.includes('allow_damaged_files')) fuseOpts.push('allow_damaged_files')
+    if (mountForm.mountOptions.includes('ignore_permissions')) fuseOpts.push('ignore_permissions')
+    
+    if (mountForm.uid) fuseOpts.push(`uid=${mountForm.uid}`)
+    if (mountForm.gid) fuseOpts.push(`gid=${mountForm.gid}`)
+    
+    if (fuseOpts.length > 0) {
+      parts.push('-o', fuseOpts.join(','))
+    }
+    
+    if (mountForm.mountOptions.includes('numeric-ids')) parts.push('--numeric-ids')
+    if (mountForm.foreground) parts.push('--foreground')
+    if (mountForm.considerCheckpoints) parts.push('--consider-checkpoints')
+    if (mountForm.stripComponents) parts.push('--strip-components', mountForm.stripComponents)
+    if (mountForm.globArchives) parts.push('--glob-archives', mountForm.globArchives)
+    if (mountForm.firstN) parts.push('--first', mountForm.firstN)
+    if (mountForm.lastN) parts.push('--last', mountForm.lastN)
+    
+    // Repository path
+    let repoPath = mountingRepository.path
+    if (mountForm.mountType === 'archive' && mountForm.archiveName) {
+      repoPath = `${repoPath}::${mountForm.archiveName}`
+    }
+    parts.push(repoPath)
+    
+    // Mount point
+    const mountPoint = mountForm.mountPoint || `/mnt/borg/${mountingRepository.id}${mountForm.mountType === 'archive' && mountForm.archiveName ? `-${mountForm.archiveName}` : ''}`
+    parts.push(mountPoint)
+    
+    // Paths
+    if (mountForm.paths) {
+      parts.push(...mountForm.paths.split(/\s+/).filter(p => p))
+    }
+    
+    return parts.join(' ')
+  }
+
+  const handleResetMountOptions = () => {
+    setMountForm({
+      ...mountForm,
+      mountOptions: [],
+      uid: '',
+      gid: '',
+      foreground: false,
+      considerCheckpoints: false,
+      paths: '',
+      stripComponents: '',
+      globArchives: '',
+      firstN: '',
+      lastN: '',
+    })
+  }
+
+  const handleUnmountRepository = (repository: Repository, archiveName?: string) => {
+    if (window.confirm(`Are you sure you want to unmount ${archiveName ? `archive "${archiveName}"` : 'this repository'}?`)) {
+      unmountRepositoryMutation.mutate({ id: repository.id, archiveName })
+    }
+  }
+
+  const handleConfirmMount = () => {
+    if (mountingRepository) {
+      // Build mount options array
+      const mountOptions = [...mountForm.mountOptions]
+      
+      // Add uid/gid if specified
+      if (mountForm.uid) {
+        mountOptions.push(`uid=${mountForm.uid}`)
+      }
+      if (mountForm.gid) {
+        mountOptions.push(`gid=${mountForm.gid}`)
+      }
+      
+      // Add other options as flags
+      const mountData: any = {
+        id: mountingRepository.id,
+        archiveName: mountForm.mountType === 'archive' ? mountForm.archiveName : undefined,
+        mountPoint: mountForm.mountPoint || undefined,
+        mountOptions: mountOptions,
+      }
+      
+      // Add additional options
+      if (mountForm.foreground) mountData.foreground = true
+      if (mountForm.considerCheckpoints) mountData.consider_checkpoints = true
+      if (mountForm.paths) mountData.paths = mountForm.paths
+      if (mountForm.stripComponents) mountData.strip_components = mountForm.stripComponents
+      if (mountForm.globArchives) mountData.glob_archives = mountForm.globArchives
+      if (mountForm.firstN) mountData.first_n = mountForm.firstN
+      if (mountForm.lastN) mountData.last_n = mountForm.lastN
+      
+      mountRepositoryMutation.mutate(mountData)
     }
   }
 
@@ -908,6 +1116,8 @@ export default function Repositories() {
               onCheck={() => handleCheckRepository(repository)}
               onCompact={() => handleCompactRepository(repository)}
               onPrune={() => handlePruneRepository(repository)}
+              onMount={() => handleMountRepository(repository)}
+              onUnmount={(archiveName?: string) => handleUnmountRepository(repository, archiveName)}
               onEdit={() => openEditModal(repository)}
               onDelete={() => handleDeleteRepository(repository)}
               getCompressionLabel={getCompressionLabel}
@@ -934,6 +1144,363 @@ export default function Repositories() {
         onCancel={() => setCompactingRepository(null)}
         isLoading={compactRepositoryMutation.isPending}
       />
+
+      {/* Mount Repository Dialog */}
+      <Dialog open={mountDialogOpen} onClose={() => setMountDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Typography variant="h6">Mount Repository</Typography>
+            <Button
+              size="small"
+              startIcon={<Refresh />}
+              onClick={handleResetMountOptions}
+              sx={{ textTransform: 'none' }}
+            >
+              Reset Options
+            </Button>
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 2 }}>
+            <Tabs value={mountDialogTab} onChange={(_e, newValue) => setMountDialogTab(newValue)}>
+              <Tab label="Basic" />
+              <Tab label="Advanced Options" />
+              <Tab label="Preview" />
+            </Tabs>
+          </Box>
+
+          {mountDialogTab === 0 && (
+            <Stack spacing={3} sx={{ mt: 1 }}>
+              <FormControl fullWidth>
+                <InputLabel>Mount Type</InputLabel>
+                <Select
+                  value={mountForm.mountType}
+                  label="Mount Type"
+                  onChange={(e) =>
+                    setMountForm({ ...mountForm, mountType: e.target.value as 'repository' | 'archive' })
+                  }
+                >
+                  <MenuItem value="repository">Entire Repository</MenuItem>
+                  <MenuItem value="archive">Specific Archive</MenuItem>
+                </Select>
+              </FormControl>
+
+            {mountForm.mountType === 'archive' && (
+              <Autocomplete
+                freeSolo
+                options={archivesData?.data?.archives?.map((a: any) => a.name) || []}
+                value={mountForm.archiveName}
+                onInputChange={(_e, newValue) => setMountForm({ ...mountForm, archiveName: newValue })}
+                onChange={(_e, newValue) => setMountForm({ ...mountForm, archiveName: newValue || '' })}
+                loading={loadingArchives}
+                renderInput={(params) => (
+                  <TextField
+                    {...params}
+                    label="Archive Name"
+                    placeholder="Select or enter archive name"
+                    helperText={loadingArchives ? 'Loading archives...' : 'Select from list or type archive name'}
+                    required
+                  />
+                )}
+              />
+            )}
+
+              <TextField
+                fullWidth
+                label="Custom Mount Point (Optional)"
+                value={mountForm.mountPoint}
+                onChange={(e) => setMountForm({ ...mountForm, mountPoint: e.target.value })}
+                placeholder={mountingRepository ? `/mnt/borg/${mountingRepository.id}${mountForm.mountType === 'archive' && mountForm.archiveName ? `-${mountForm.archiveName}` : ''}` : '/mnt/borg/custom-path'}
+                helperText={
+                  mountForm.mountPoint
+                    ? mountForm.mountPoint.startsWith('/mnt/borg/')
+                      ? 'Valid mount point path'
+                      : 'Warning: Path must start with /mnt/borg/ for security. This ensures mounts are accessible via Docker volume mounts.'
+                    : `Default: /mnt/borg/${mountingRepository?.id || 'repo-id'}${mountForm.mountType === 'archive' && mountForm.archiveName ? `-${mountForm.archiveName}` : ''}`
+                }
+                error={mountForm.mountPoint !== '' && !mountForm.mountPoint.startsWith('/mnt/borg/')}
+                InputProps={{
+                  startAdornment: mountForm.mountPoint && mountForm.mountPoint.startsWith('/mnt/borg/') ? (
+                    <InputAdornment position="start">
+                      <Folder color="success" fontSize="small" />
+                    </InputAdornment>
+                  ) : null,
+                }}
+              />
+
+              <Accordion expanded={mountForm.showAdvanced} onChange={(_e, expanded) => setMountForm({ ...mountForm, showAdvanced: expanded })}>
+                <AccordionSummary expandIcon={<ExpandMore />}>
+                  <Typography variant="subtitle2">Basic Mount Options</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Stack spacing={1}>
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={mountForm.mountOptions.includes('numeric-ids')}
+                          onChange={(e) => {
+                            const options = e.target.checked
+                              ? [...mountForm.mountOptions, 'numeric-ids']
+                              : mountForm.mountOptions.filter((opt) => opt !== 'numeric-ids')
+                            setMountForm({ ...mountForm, mountOptions: options })
+                          }}
+                        />
+                      }
+                      label={
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <span>Numeric IDs</span>
+                          <Tooltip title="Use numeric user/group IDs from archive instead of mapping to system names">
+                            <HelpOutline fontSize="small" color="action" />
+                          </Tooltip>
+                        </Box>
+                      }
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={mountForm.mountOptions.includes('versions')}
+                          onChange={(e) => {
+                            const options = e.target.checked
+                              ? [...mountForm.mountOptions, 'versions']
+                              : mountForm.mountOptions.filter((opt) => opt !== 'versions')
+                            setMountForm({ ...mountForm, mountOptions: options })
+                          }}
+                        />
+                      }
+                      label={
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <span>Versions View</span>
+                          <Tooltip title="Merged, versioned view of files across all archives (EXPERIMENTAL)">
+                            <HelpOutline fontSize="small" color="action" />
+                          </Tooltip>
+                        </Box>
+                      }
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={mountForm.mountOptions.includes('allow_damaged_files')}
+                          onChange={(e) => {
+                            const options = e.target.checked
+                              ? [...mountForm.mountOptions, 'allow_damaged_files']
+                              : mountForm.mountOptions.filter((opt) => opt !== 'allow_damaged_files')
+                            setMountForm({ ...mountForm, mountOptions: options })
+                          }}
+                        />
+                      }
+                      label={
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <span>Allow Damaged Files</span>
+                          <Tooltip title="Read files with missing chunks (replaced with zeros by borg check --repair)">
+                            <HelpOutline fontSize="small" color="action" />
+                          </Tooltip>
+                        </Box>
+                      }
+                    />
+                    <FormControlLabel
+                      control={
+                        <Checkbox
+                          checked={mountForm.mountOptions.includes('ignore_permissions')}
+                          onChange={(e) => {
+                            const options = e.target.checked
+                              ? [...mountForm.mountOptions, 'ignore_permissions']
+                              : mountForm.mountOptions.filter((opt) => opt !== 'ignore_permissions')
+                            setMountForm({ ...mountForm, mountOptions: options })
+                          }}
+                        />
+                      }
+                      label={
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <span>Ignore Permissions</span>
+                          <Tooltip title="Don't enforce default_permissions (security risk)">
+                            <HelpOutline fontSize="small" color="action" />
+                          </Tooltip>
+                        </Box>
+                      }
+                    />
+                  </Stack>
+                </AccordionDetails>
+              </Accordion>
+            </Stack>
+          )}
+
+          {mountDialogTab === 1 && (
+            <Stack spacing={3} sx={{ mt: 1 }}>
+              <Box>
+                <Typography variant="subtitle2" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  User/Group ID Override
+                  <Tooltip title="Override user and group IDs for all files in the mount">
+                    <HelpOutline fontSize="small" color="action" />
+                  </Tooltip>
+                </Typography>
+                <Stack direction="row" spacing={2}>
+                  <TextField
+                    label="User ID (UID)"
+                    type="number"
+                    value={mountForm.uid}
+                    onChange={(e) => setMountForm({ ...mountForm, uid: e.target.value })}
+                    placeholder="e.g., 1000"
+                    helperText="Optional: Override user ID"
+                    inputProps={{ min: 0 }}
+                  />
+                  <TextField
+                    label="Group ID (GID)"
+                    type="number"
+                    value={mountForm.gid}
+                    onChange={(e) => setMountForm({ ...mountForm, gid: e.target.value })}
+                    placeholder="e.g., 1000"
+                    helperText="Optional: Override group ID"
+                    inputProps={{ min: 0 }}
+                  />
+                </Stack>
+              </Box>
+
+              <Divider />
+
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={mountForm.foreground}
+                    onChange={(e) => setMountForm({ ...mountForm, foreground: e.target.checked })}
+                  />
+                }
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <span>Run in Foreground</span>
+                    <Tooltip title="Stay in foreground, do not daemonize (useful for debugging)">
+                      <HelpOutline fontSize="small" color="action" />
+                    </Tooltip>
+                  </Box>
+                }
+              />
+
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={mountForm.considerCheckpoints}
+                    onChange={(e) => setMountForm({ ...mountForm, considerCheckpoints: e.target.checked })}
+                  />
+                }
+                label={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <span>Show Checkpoint Archives</span>
+                    <Tooltip title="Include checkpoint archives in repository contents list">
+                      <HelpOutline fontSize="small" color="action" />
+                    </Tooltip>
+                  </Box>
+                }
+              />
+
+              <Divider />
+
+              {mountForm.mountType === 'repository' && (
+                <Box>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Archive Filters (Repository Mounts Only)
+                  </Typography>
+                  <Stack spacing={2}>
+                    <TextField
+                      fullWidth
+                      label="Glob Pattern"
+                      value={mountForm.globArchives}
+                      onChange={(e) => setMountForm({ ...mountForm, globArchives: e.target.value })}
+                      placeholder="e.g., *-my-home"
+                      helperText="Only consider archives matching this glob pattern"
+                    />
+                    <Stack direction="row" spacing={2}>
+                      <TextField
+                        label="First N Archives"
+                        type="number"
+                        value={mountForm.firstN}
+                        onChange={(e) => setMountForm({ ...mountForm, firstN: e.target.value })}
+                        placeholder="e.g., 10"
+                        helperText="Consider first N archives"
+                        inputProps={{ min: 1 }}
+                      />
+                      <TextField
+                        label="Last N Archives"
+                        type="number"
+                        value={mountForm.lastN}
+                        onChange={(e) => setMountForm({ ...mountForm, lastN: e.target.value })}
+                        placeholder="e.g., 10"
+                        helperText="Consider last N archives"
+                        inputProps={{ min: 1 }}
+                      />
+                    </Stack>
+                  </Stack>
+                </Box>
+              )}
+
+              <Divider />
+
+              <TextField
+                fullWidth
+                label="Path Filtering"
+                value={mountForm.paths}
+                onChange={(e) => setMountForm({ ...mountForm, paths: e.target.value })}
+                placeholder="path1 path2 path3"
+                helperText="Mount only these paths (space-separated). Reduces memory usage."
+                multiline
+                rows={2}
+              />
+
+              <TextField
+                fullWidth
+                label="Strip Components"
+                type="number"
+                value={mountForm.stripComponents}
+                onChange={(e) => setMountForm({ ...mountForm, stripComponents: e.target.value })}
+                placeholder="e.g., 2"
+                helperText="Remove N leading path components from mounted paths"
+                inputProps={{ min: 0 }}
+              />
+            </Stack>
+          )}
+
+          {mountDialogTab === 2 && (
+            <Stack spacing={2} sx={{ mt: 1 }}>
+              <Typography variant="subtitle2">Mount Command Preview</Typography>
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 2,
+                  bgcolor: 'grey.50',
+                  fontFamily: 'monospace',
+                  fontSize: '0.875rem',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {generateMountCommandPreview()}
+              </Paper>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button
+                  size="small"
+                  startIcon={<ContentCopy />}
+                  onClick={() => {
+                    navigator.clipboard.writeText(generateMountCommandPreview())
+                    toast.success('Command copied to clipboard')
+                  }}
+                >
+                  Copy Command
+                </Button>
+              </Box>
+              <Alert severity="info" sx={{ mt: 2 }}>
+                This is the borg mount command that will be executed. You can copy it to run manually if needed.
+              </Alert>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMountDialogOpen(false)}>Cancel</Button>
+          <Button
+            onClick={handleConfirmMount}
+            variant="contained"
+            disabled={mountRepositoryMutation.isPending || (mountForm.mountType === 'archive' && !mountForm.archiveName)}
+          >
+            {mountRepositoryMutation.isPending ? 'Mounting...' : 'Mount'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Create Repository Dialog */}
       <Dialog

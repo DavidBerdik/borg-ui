@@ -393,6 +393,189 @@ class BorgInterface:
             env["BORG_PASSPHRASE"] = passphrase
 
         return await self._execute_command(cmd, env=env if env else None)
+
+    async def mount_repository(
+        self,
+        repository: str,
+        mount_point: str,
+        archive_name: str = None,
+        mount_options: List[str] = None,
+        remote_path: str = None,
+        passphrase: str = None,
+        ssh_key_id: int = None,
+        foreground: bool = False,
+        consider_checkpoints: bool = False,
+        paths: str = "",
+        strip_components: str = "",
+        glob_archives: str = "",
+        first_n: str = "",
+        last_n: str = ""
+    ) -> Dict:
+        """
+        Mount a repository or archive as a FUSE filesystem
+        
+        Args:
+            repository: Repository path
+            mount_point: Directory where to mount
+            archive_name: Optional archive name (if None, mounts entire repository)
+            mount_options: List of mount options (e.g., ["numeric-ids", "versions"])
+            remote_path: Path to remote borg binary
+            passphrase: Repository passphrase
+            ssh_key_id: SSH key ID for remote repositories
+            
+        Returns:
+            Dict with success status and mount information
+        """
+        mount_options = mount_options or []
+        
+        # Build borg mount command
+        cmd = [self.borg_cmd, "mount"]
+        
+        if remote_path:
+            cmd.extend(["--remote-path", remote_path])
+        
+        # Add mount options
+        if "numeric-ids" in mount_options:
+            cmd.append("--numeric-ids")
+        
+        if foreground:
+            cmd.append("--foreground")
+        
+        if consider_checkpoints:
+            cmd.append("--consider-checkpoints")
+        
+        if strip_components:
+            try:
+                strip_num = int(strip_components)
+                if strip_num >= 0:
+                    cmd.extend(["--strip-components", str(strip_num)])
+            except ValueError:
+                logger.warning("Invalid strip-components value", value=strip_components)
+        
+        if glob_archives:
+            cmd.extend(["--glob-archives", glob_archives])
+        
+        if first_n:
+            try:
+                first_num = int(first_n)
+                if first_num > 0:
+                    cmd.extend(["--first", str(first_num)])
+            except ValueError:
+                logger.warning("Invalid first-n value", value=first_n)
+        
+        if last_n:
+            try:
+                last_num = int(last_n)
+                if last_num > 0:
+                    cmd.extend(["--last", str(last_num)])
+            except ValueError:
+                logger.warning("Invalid last-n value", value=last_n)
+        
+        # Build -o options string
+        fuse_options = []
+        if "versions" in mount_options:
+            fuse_options.append("versions")
+        if "allow_damaged_files" in mount_options:
+            fuse_options.append("allow_damaged_files")
+        if "ignore_permissions" in mount_options:
+            fuse_options.append("ignore_permissions")
+        
+        # Handle uid/gid options if specified
+        uid = None
+        gid = None
+        for opt in mount_options:
+            if opt.startswith("uid="):
+                uid = opt.split("=")[1]
+            elif opt.startswith("gid="):
+                gid = opt.split("=")[1]
+        
+        if uid or gid:
+            uid_gid_opts = []
+            if uid:
+                uid_gid_opts.append(f"uid={uid}")
+            if gid:
+                uid_gid_opts.append(f"gid={gid}")
+            fuse_options.extend(uid_gid_opts)
+        
+        if fuse_options:
+            cmd.extend(["-o", ",".join(fuse_options)])
+        
+        # Build repository::archive path
+        if archive_name:
+            repo_path = f"{repository}::{archive_name}"
+        else:
+            repo_path = repository
+        
+        cmd.append(repo_path)
+        cmd.append(mount_point)
+        
+        # Add path filtering if specified
+        if paths:
+            path_list = paths.split()
+            cmd.extend(path_list)
+        
+        # Set up environment
+        env = {}
+        if passphrase:
+            env["BORG_PASSPHRASE"] = passphrase
+        env["BORG_UNKNOWN_UNENCRYPTED_REPO_ACCESS_IS_OK"] = "yes"
+        
+        # Handle SSH key for remote repositories
+        temp_key_file = None
+        try:
+            if ssh_key_id and repository.startswith("ssh://"):
+                from app.database.models import SSHKey
+                from app.database.database import get_db
+                from cryptography.fernet import Fernet
+                import base64
+                import tempfile
+                
+                db = next(get_db())
+                ssh_key = db.query(SSHKey).filter(SSHKey.id == ssh_key_id).first()
+                if ssh_key:
+                    from app.config import settings
+                    encryption_key = settings.secret_key.encode()[:32]
+                    cipher = Fernet(base64.urlsafe_b64encode(encryption_key))
+                    private_key = cipher.decrypt(ssh_key.private_key.encode()).decode()
+                    
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+                        f.write(private_key)
+                        temp_key_file = f.name
+                    
+                    os.chmod(temp_key_file, 0o600)
+                    
+                    ssh_opts = [
+                        "-i", temp_key_file,
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "LogLevel=ERROR"
+                    ]
+                    env["BORG_RSH"] = f"ssh {' '.join(ssh_opts)}"
+            
+            # Execute mount command (runs in background by default)
+            result = await self._execute_command(cmd, timeout=30, env=env if env else None)
+            
+            return result
+        finally:
+            # Clean up temp SSH key file if created
+            if temp_key_file and os.path.exists(temp_key_file):
+                try:
+                    os.unlink(temp_key_file)
+                except Exception as e:
+                    logger.warning("Failed to clean up temp SSH key", error=str(e))
+
+    async def unmount_repository(self, mount_point: str) -> Dict:
+        """
+        Unmount a FUSE filesystem mounted with borg mount
+        
+        Args:
+            mount_point: Path where filesystem is mounted
+            
+        Returns:
+            Dict with success status
+        """
+        cmd = [self.borg_cmd, "umount", mount_point]
+        return await self._execute_command(cmd, timeout=30)
     
     
     async def get_repository_info(self, repository_path: str, remote_path: str = None) -> Dict:

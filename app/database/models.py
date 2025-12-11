@@ -421,3 +421,28 @@ class ScriptExecution(Base):
 
     def __repr__(self):
         return f"<ScriptExecution(id={self.id}, script_id={self.script_id}, status='{self.status}')>"
+
+class MountJob(Base):
+    """Track mount operations for Borg repositories and archives"""
+    __tablename__ = "mount_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    repository_id = Column(Integer, ForeignKey("repositories.id"), nullable=False, index=True)
+    archive_name = Column(String, nullable=True)  # NULL for repository mounts, archive name for archive mounts
+    mount_point = Column(String, nullable=False)  # Path where mounted (can be custom or auto-generated)
+    custom_mount_point = Column(Boolean, default=False, nullable=False)  # True if user specified custom path
+    mount_options = Column(Text, nullable=True)  # JSON string storing mount options like ["numeric-ids", "versions"]
+    status = Column(String, default="mounted", nullable=False)  # mounted, unmounted, failed
+    mounted_at = Column(DateTime, nullable=True)
+    unmounted_at = Column(DateTime, nullable=True)
+    process_pid = Column(Integer, nullable=True)  # Container PID for mount daemon tracking
+    process_start_time = Column(BigInteger, nullable=True)  # Process start time in jiffies for PID uniqueness
+    error_message = Column(Text, nullable=True)  # Error message if mount failed
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
+
+    # Relationships
+    repository = relationship("Repository")
+
+    def __repr__(self):
+        return f"<MountJob(id={self.id}, repository_id={self.repository_id}, status='{self.status}')>"

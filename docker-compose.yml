@@ -20,6 +20,12 @@ services:
     container_name: borg-web-ui
     restart: unless-stopped
 
+    # FUSE support for borg mount feature
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+
     ports:
       - "${PORT:-8081}:${PORT:-8081}"
 
@@ -61,6 +67,13 @@ services:
       # Security: Mount as read-only (:ro) when possible, but some operations need :rw
       # See docs/docker-hooks.md for usage examples and security considerations
       - /var/run/docker.sock:/var/run/docker.sock:rw
+
+      # OPTIONAL: Expose mounted Borg repositories to host system
+      # Mount this volume to access mounted repositories from your host machine
+      # Example: ./borg-mounts:/mnt/borg:rw
+      # This allows you to browse mounted repositories at ./borg-mounts/{repo-id} on your host
+      # Uncomment the line below and adjust the path as needed:
+      # - ./borg-mounts:/mnt/borg:rw
 
     environment:
       # Optional overrides (all have smart defaults)

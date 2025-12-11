@@ -19,6 +19,8 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     libssl-dev \
     build-essential \
+    libfuse3-dev \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip and setuptools for better wheel support
@@ -66,6 +68,8 @@ RUN apt-get update && apt-get install -y \
     libxxhash-dev \
     build-essential \
     pkg-config \
+    # FUSE support for borg mount
+    libfuse3-dev \
     # Additional useful packages
     rsync \
     openssh-client \
@@ -91,6 +95,8 @@ RUN apt-get update && apt-get install -y \
     ncdu \
     # SSH deployment tools
     sshpass \
+    # FUSE support for borg mount
+    fuse \
     # Cleanup
     && rm -rf /var/lib/apt/lists/*
 
@@ -108,6 +114,7 @@ COPY VERSION ./VERSION
 # Create necessary directories with proper permissions
 # /data - main data directory for all persistent data (database, ssh keys, logs, configs)
 # /backups - for actual backup storage
+# /mnt/borg - mount points for borg mount feature
 RUN mkdir -p \
     /data \
     /data/ssh_keys \
@@ -115,7 +122,8 @@ RUN mkdir -p \
     /data/config \
     /backups \
     /var/log/borg \
-    /etc/borg
+    /etc/borg \
+    /mnt/borg
 
 # Create non-root user with default UID/GID 1001:1001
 # Runtime UID/GID can be changed via PUID/PGID environment variables
@@ -127,12 +135,13 @@ RUN groupadd -g 1001 borg && \
     echo "borg ALL=(ALL) NOPASSWD: /usr/bin/borg, /usr/bin/crontab, /usr/bin/apt-get" >> /etc/sudoers
 
 # Set proper ownership and permissions
-RUN chown -R borg:borg /app /data /backups /var/log/borg /etc/borg && \
+RUN chown -R borg:borg /app /data /backups /var/log/borg /etc/borg /mnt/borg && \
     chmod -R 755 /app && \
     chmod -R 755 /data && \
     chmod -R 755 /backups && \
     chmod -R 755 /var/log/borg && \
-    chmod -R 755 /etc/borg
+    chmod -R 755 /etc/borg && \
+    chmod -R 755 /mnt/borg
 
 # Create SSH directory for borg user
 RUN mkdir -p /home/borg/.ssh && \

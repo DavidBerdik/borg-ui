@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Card, CardContent, Box, Typography, Button, Tooltip, Chip } from '@mui/material'
-import { Info, CheckCircle as CheckCircleIcon, Refresh, Delete } from '@mui/icons-material'
+import { Card, CardContent, Box, Typography, Button, Tooltip, Chip, IconButton } from '@mui/material'
+import { Info, CheckCircle as CheckCircleIcon, Refresh, Delete, Folder, FolderOff, ContentCopy } from '@mui/icons-material'
+import { toast } from 'react-hot-toast'
 import { useMaintenanceJobs } from '../hooks/useMaintenanceJobs'
 import { formatDateShort, formatDateTimeFull, formatElapsedTime } from '../utils/dateUtils'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQueryClient, useQuery } from '@tanstack/react-query'
+import { repositoriesAPI } from '../services/api'
 
 interface Repository {
   id: number
@@ -31,6 +33,8 @@ interface RepositoryCardProps {
   onCheck: () => void
   onCompact: () => void
   onPrune: () => void
+  onMount: () => void
+  onUnmount: (archiveName?: string) => void
   onEdit: () => void
   onDelete: () => void
   getCompressionLabel: (compression: string) => string
@@ -45,6 +49,8 @@ export default function RepositoryCard({
   onCheck,
   onCompact,
   onPrune,
+  onMount,
+  onUnmount,
   onEdit,
   onDelete,
   getCompressionLabel,
@@ -58,6 +64,13 @@ export default function RepositoryCard({
     repository.id,
     true // Always enabled to handle page refreshes while jobs are running
   )
+
+  // Get mount status
+  const { data: mountStatus } = useQuery({
+    queryKey: ['mount-status', repository.id],
+    queryFn: () => repositoriesAPI.getMountStatus(repository.id),
+    refetchInterval: 5000, // Poll every 5 seconds
+  })
 
   // Determine if maintenance is running
   // Prioritize hasRunningJobs from polling (more up-to-date) over API flag
@@ -127,6 +140,24 @@ export default function RepositoryCard({
                   sx={{ height: '20px', fontSize: '0.7rem' }}
                 />
               )}
+              {mountStatus?.data?.mounted && (
+                <Tooltip
+                  title={
+                    mountStatus.data.mount_point
+                      ? `Mounted at: ${mountStatus.data.mount_point}`
+                      : 'Mounted'
+                  }
+                  arrow
+                >
+                  <Chip
+                    label="Mounted"
+                    size="small"
+                    color="success"
+                    icon={<Folder />}
+                    sx={{ height: '20px', fontSize: '0.7rem', cursor: 'help' }}
+                  />
+                </Tooltip>
+              )}
             </Box>
             <Typography
               variant="body2"
@@ -135,6 +166,29 @@ export default function RepositoryCard({
             >
               {repository.path}
             </Typography>
+            {mountStatus?.data?.mounted && mountStatus.data.mount_point && (
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
+                <Typography
+                  variant="caption"
+                  color="success.main"
+                  sx={{ fontFamily: 'monospace', fontSize: '0.75rem' }}
+                >
+                  Mounted: {mountStatus.data.mount_point}
+                </Typography>
+                <Tooltip title="Copy mount point path">
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      navigator.clipboard.writeText(mountStatus.data.mount_point)
+                      toast.success('Mount point path copied to clipboard')
+                    }}
+                    sx={{ p: 0.25 }}
+                  >
+                    <ContentCopy fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Box>
+            )}
           </Box>
           {isAdmin && (
             <Box sx={{ display: 'flex', gap: 1 }}>
@@ -292,6 +346,38 @@ export default function RepositoryCard({
               >
                 Prune
               </Button>
+              {mountStatus?.data?.mounted ? (
+                <Tooltip
+                  title={
+                    mountStatus.data.mount_point
+                      ? `Mounted at: ${mountStatus.data.mount_point}\nClick to unmount`
+                      : 'Click to unmount'
+                  }
+                  arrow
+                >
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<FolderOff />}
+                    onClick={() => onUnmount()}
+                    color="warning"
+                    sx={{ textTransform: 'none' }}
+                  >
+                    Unmount
+                  </Button>
+                </Tooltip>
+              ) : (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<Folder />}
+                  onClick={onMount}
+                  disabled={isMaintenanceRunning}
+                  sx={{ textTransform: 'none' }}
+                >
+                  Mount
+                </Button>
+              )}
               <Button
                 variant="outlined"
                 size="small"

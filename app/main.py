@@ -135,6 +135,17 @@ async def startup_event():
     except Exception as e:
         logger.error("Failed to cleanup orphaned jobs", error=str(e))
 
+    # Cleanup stale mounts from previous container runs
+    from app.services.mount_service import mount_service
+    from app.database.database import SessionLocal
+    try:
+        db = SessionLocal()
+        await mount_service.cleanup_stale_mounts(db)
+        db.close()
+        logger.info("Stale mount cleanup completed")
+    except Exception as e:
+        logger.warning("Failed to cleanup stale mounts", error=str(e))
+
     # Note: Package auto-installation now handled by entrypoint.sh startup script
     # This runs asynchronously via /app/app/scripts/startup_packages.py
     # Package installation jobs will start in the background after API is ready

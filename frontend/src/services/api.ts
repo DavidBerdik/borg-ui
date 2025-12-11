@@ -214,6 +214,17 @@ export const repositoriesAPI = {
     api.get(`/repositories/${repoId}/archives/${archiveName}/files`, {
       params: limit ? { limit } : undefined,
     }),
+  // Mount operations
+  mountRepository: (repoId: number, data: any) =>
+    api.post(`/repositories/${repoId}/mount`, data),
+  unmountRepository: (repoId: number, archiveName?: string) =>
+    api.post(`/repositories/${repoId}/unmount`, {
+      archive_name: archiveName,
+    }),
+  getMountStatus: (repoId: number, archiveName?: string) =>
+    api.get(`/repositories/${repoId}/mount-status`, {
+      params: { archive_name: archiveName },
+    }),
   // Check schedule management
   getCheckSchedule: (id: number) => api.get(`/repositories/${id}/check-schedule`),
   updateCheckSchedule: (id: number, data: any) =>
